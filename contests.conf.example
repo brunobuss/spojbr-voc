@@ -1,0 +1,10 @@
+; This is an example contest
+;
+; After starting up the application, you can get a list of submissions made
+; by accessing http://localhost:3000/subs/example
+[example]
+name = Example Contest ;Contest Title
+user_ids = userA userB ;Contests users
+prob_ids = BURACOS HOMEM COFRE CIPO ;Problems IDs
+starttime = 2012 8 1 0 0 ;Start time as YEAR MONTH DAY HOUR MINUTES
+duration  = 5 ;Duration in hours
