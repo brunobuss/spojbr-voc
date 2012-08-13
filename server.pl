@@ -81,7 +81,9 @@ Mojo::IOLoop->recurring(
         my $url = 'http://br.spoj.pl/status/' . $p . '/signedlist/';
         my $spojres = $ua->get($url)->res->body;
 
-        foreach my $l (reverse split('\n', $spojres)){
+        my $temp = [];
+
+        foreach my $l (split('\n', $spojres)){
           my @s = split('\|', $l);
           shift @s;
           trim @s;
@@ -101,8 +103,10 @@ Mojo::IOLoop->recurring(
           last if exists $contests->{$c}->{sub_index}->{$s[0]};
 
           $contests->{$c}->{sub_index}->{$s[0]} = int( @{$contests->{$c}->{subs}} );
-          push @{$contests->{$c}->{subs}}, {id => $s[0], problem => $s[2], result => $s[3], user => $p};
+          push @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $p};
         }
+
+        unshift @{$contests->{$c}->{subs}}, (@{$temp});
 
       }
 
