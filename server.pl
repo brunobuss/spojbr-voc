@@ -124,6 +124,9 @@ Mojo::IOLoop->singleton->reactor->on(error => sub {
 # split problem ids and user ids and set the DateTime object for
 # the contest.
 sub load_contests {
+
+  die "No config file found!" unless -r 'contests.conf';
+
   $contests = Config::INI::Reader->read_file('contests.conf');
 
   foreach (keys(%{$contests})){
