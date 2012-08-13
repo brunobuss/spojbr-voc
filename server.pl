@@ -57,6 +57,8 @@ get '/:last' => sub{
     push @{$response}, [$sub->{id}, $sub->{problem}, $sub->{result}, $sub->{user}];
   }
 
+  shift @{$response}; #I think we don't need the same sub as the one passed in :last...
+
   $self->render(json => $response);
 };
 
@@ -97,16 +99,17 @@ Mojo::IOLoop->recurring(
           #This problem is in out contest, but out of time submission...
           my $c_st_f = $c_st->ymd . ' ' . $c_st->hms;
           my $c_et_f = $c_et->ymd . ' ' . $c_et->hms;
-          next unless ($s[1] ge $c_st_f && $s[1] le $c_et_f);
+          next unless ($s[1] le $c_et_f);
+          last unless ($s[1] ge $c_st_f);
 
           #Sub already readed, so this and all that follow are already on our in memory sub db;
           last if exists $contests->{$c}->{sub_index}->{$s[0]};
 
           $contests->{$c}->{sub_index}->{$s[0]} = int( @{$contests->{$c}->{subs}} );
-          push @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $p};
+          unshift @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $p};
         }
 
-        unshift @{$contests->{$c}->{subs}}, (@{$temp});
+        push @{$contests->{$c}->{subs}}, (@{$temp});
 
       }
 
