@@ -13,14 +13,17 @@ use utf8;
 #app->config(hypnotoad => {listen => ['http://*:10000'], proxy => 1});
 
 my $contests;
+my $probe_time = 15;
+my $penalty_per_wrong_sub = 20; #in minutes;
 
 get '/' => 'index';
 
-under '/subs/:contest' => sub {
+
+under '/:contest' => sub {
   my $self = shift;
 
-  if( !exists($contests->{$self->param('contest')}) ){
-    $self->render(json => ["Contest", "Not", "Found"]);
+  unless( exists($contests->{$self->param('contest')}) ){
+    $self->render(template => "404", status => 404);
     return;
   }
 
@@ -31,42 +34,22 @@ get '/' => sub{
   my $self = shift;
 
   my $c = $self->param('contest');
-  my $response = [];
 
-  my $first_pos = 0;
-  my $last_pos = int(@{$contests->{$c}->{subs}}) - 1;
+  $self->stash(probs => [$contests->{$c}->{prob_ids}] ) ;
+  $self->stash(users => [$contests->{$c}->{user_ids}] ) ;
 
-  foreach my $sub ( @{$contests->{$c}->{subs}}[$first_pos .. $last_pos]){
-    push @{$response}, [$sub->{id}, $sub->{problem}, $sub->{result}, $sub->{user}];
-  }
+} => "contest";
 
-  $self->render(json => $response);
-};
-
-get '/:last' => sub{
+get '/scoreboard' => sub{
   my $self = shift;
-  
   my $c = $self->param('contest');
-  my $l = $self->param('last');
-  my $response = [];
-
-  my $first_pos = $contests->{$c}->{sub_index}->{$l} || 0;
-  my $last_pos = int(@{$contests->{$c}->{subs}}) - 1;
-
-  foreach my $sub ( @{$contests->{$c}->{subs}}[$first_pos .. $last_pos]){
-    push @{$response}, [$sub->{id}, $sub->{problem}, $sub->{result}, $sub->{user}];
-  }
-
-  shift @{$response}; #I think we don't need the same sub as the one passed in :last...
-
-  $self->render(json => $response);
+  $self->render(json => $contests->{$c}->{scoreboard});
 };
 
 
-
-## Fetch and parse SPOJ subs every 30 seconds:
+## Fetch and parse SPOJ subs every $probe_time seconds:
 Mojo::IOLoop->recurring(
-  15 => sub {
+  $probe_time => sub {
 
     my $now = DateTime->now(time_zone => 'America/Sao_Paulo')->set_time_zone('UTC');
     my $ua  = Mojo::UserAgent->new;
@@ -78,9 +61,9 @@ Mojo::IOLoop->recurring(
 
       next if($now < $c_st || $now > $c_et);
 
-      foreach my $p ( @{$contests->{$c}->{user_ids}} ){
+      foreach my $u ( @{$contests->{$c}->{user_ids}} ){
 
-        my $url = 'http://br.spoj.pl/status/' . $p . '/signedlist/';
+        my $url = 'http://br.spoj.pl/status/' . $u . '/signedlist/';
         my $spojres = $ua->get($url)->res->body;
 
         my $temp = [];
@@ -106,10 +89,41 @@ Mojo::IOLoop->recurring(
           last if exists $contests->{$c}->{sub_index}->{$s[0]};
 
           $contests->{$c}->{sub_index}->{$s[0]} = int( @{$contests->{$c}->{subs}} );
-          unshift @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $p};
+          unshift @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $u};
         }
 
-        push @{$contests->{$c}->{subs}}, (@{$temp});
+        #Processing subs for user $u on the right order now...
+        foreach my $s (@{$temp}){
+
+          my $prob_number = $contests->{$c}->{probs_index}->{$s->{problem}} + 3;
+          my $user_number = $contests->{$c}->{users_index}->{$u};
+          my $res = $s->{result};
+
+          my $r = $contests->{$c}->{scoreboard}->[$user_number];
+
+          if( $r->[prob_number]->[0] == -1 ){
+
+            $r->[prob_number]->[1]++; #One more submission to this problem;
+
+            if( $res eq 'AC' ){
+
+              #TODO: Set the time of correct submission.
+              #$r->[prob_number]->[0] = $now - $c_st;
+
+              #Update total penalty.
+              $r->[2] += $r->[prob_number]->[1] * $penalty_per_wrong_sub;
+
+            }
+
+
+          }
+
+
+        }
+
+
+
+        #push @{$contests->{$c}->{subs}}, (@{$temp});
 
       }
 
@@ -131,6 +145,8 @@ Mojo::IOLoop->singleton->reactor->on(error => sub {
 # split problem ids and user ids and set the DateTime object for
 # the contest.
 sub load_contests {
+
+  my $count;
 
   die "No config file found!" unless -r 'contests.conf';
 
@@ -162,6 +178,34 @@ sub load_contests {
 
     $contests->{$_}->{subs} = [];
     $contests->{$_}->{sub_index} = {};
+
+    $count = 0;
+    $contests->{$_}->{probs_index} = {};
+    foreach my $p ( @{$contests->{$_}->{prob_ids}} ) {
+      $contests->{$_}->{probs_index}->{$p} = $count++;
+    }
+
+    $count = 0;
+    $contests->{$_}->{users_index} = {};
+    foreach my $u ( @{$contests->{$_}->{user_ids}} ) {
+      $contests->{$_}->{users_index}->{$u} = $count++;
+    }
+
+    $contests->{$_}->{scoreboard} = [];
+    foreach my $u ( @{$contests->{$_}->{user_ids}} ){
+
+      my $r = [];
+      push @{$r}, $u, 0, 0; #user_id, acs, total_penalty
+
+      foreach my $p ( @{$contests->{$_}->{prob_ids}} ) {
+        push @{$r}, [-1, 0]; #Accepted time, Submissions
+      }
+
+      push @{$contests->{$_}->{scoreboard}}, $r;
+
+    }
+
+
   }
 
 }
@@ -173,3 +217,9 @@ app->start;
 __DATA__
 @@index.html.ep
 Hello World! :-)
+
+@@contest.html.ep
+Contest here :-)
+
+@@404.html.ep
+Contest not found =/
