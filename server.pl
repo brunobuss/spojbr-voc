@@ -16,7 +16,19 @@ my $contests;
 my $probe_time = 15;
 my $penalty_per_wrong_sub = 20; #in minutes;
 
-get '/' => 'index';
+get '/' => sub {
+  my $self = shift;
+
+  my $now = DateTime->now(time_zone => 'America/Sao_Paulo')->set_time_zone('UTC');
+  my $clist = [];
+
+  foreach (keys %{$contests}){
+    push @{$clist}, [$_, $contests->{$_}->{name}] if $now >= $contests->{$_}->{starttime};
+  }
+
+  $self->stash(clist => $clist);
+
+} => 'index';
 
 
 under '/:contest' => sub {
@@ -24,6 +36,12 @@ under '/:contest' => sub {
 
   unless( exists($contests->{$self->param('contest')}) ){
     $self->render(template => "404", status => 404);
+    return;
+  }
+
+  my $now = DateTime->now(time_zone => 'America/Sao_Paulo')->set_time_zone('UTC');
+  if ($now < $contests->{$self->param('contest')}->{starttime}){
+    $self->render(template => "notstarted");
     return;
   }
 
@@ -35,15 +53,21 @@ get '/' => sub{
 
   my $c = $self->param('contest');
 
-  $self->stash(probs => [$contests->{$c}->{prob_ids}] ) ;
-  $self->stash(users => [$contests->{$c}->{user_ids}] ) ;
+  $self->stash(probs => $contests->{$c}->{prob_ids} ) ;
+  $self->stash(users => [ sort @{$contests->{$c}->{user_ids}} ] ) ;
+  $self->stash(title => $contests->{$c}->{name});
+  $self->stash(url   => $c);
 
 } => "contest";
 
 get '/scoreboard' => sub{
   my $self = shift;
   my $c = $self->param('contest');
-  $self->render(json => $contests->{$c}->{scoreboard});
+
+  my $board = [ sort {$b->[1] <=> $a->[1] || $a->[2] <=> $b->[2] || $a->[0] cmp $b->[0] } @{$contests->{$c}->{scoreboard}} ];
+
+
+  $self->render(json => $board);
 };
 
 
@@ -76,20 +100,32 @@ Mojo::IOLoop->recurring(
           next unless (int(@s) == 7); #Not a line that we are looking for...
           next unless ($s[0] =~ /\d+/); #A header line...
 
+          next unless ($s[6] eq 'C++' or $s[6] eq 'C'); #Only accept submissions in C or C++.
+
           #This problem isn't on our contest:
           next unless (any { $_ eq $s[2] } @{$contests->{$c}->{prob_ids}});
 
           #This problem is in out contest, but out of time submission...
-          my $c_st_f = $c_st->ymd . ' ' . $c_st->hms;
-          my $c_et_f = $c_et->ymd . ' ' . $c_et->hms;
-          next unless ($s[1] le $c_et_f);
-          last unless ($s[1] ge $c_st_f);
+          my @time_temp = split(/ /, $s[1]);
+             @time_temp = (split(/-/, $time_temp[0]), split(/:/, $time_temp[1]));
+
+          my $sub_time = DateTime->new(year => $time_temp[0], month  => $time_temp[1], day    => $time_temp[2],
+                                       hour => $time_temp[3], minute => $time_temp[4], second => $time_temp[5]);
+
+          print $c_st->ymd . ' ' . $c_st->hms . "\n";
+          print $c_et->ymd . ' ' . $c_et->hms . "\n";
+          print $sub_time->ymd . ' ' . $sub_time->hms . "\n";
+
+          #my $c_st_f = $c_st->ymd . ' ' . $c_st->hms;
+          #my $c_et_f = $c_et->ymd . ' ' . $c_et->hms;
+          next unless ($sub_time <= $c_et);
+          last unless ($sub_time >= $c_st);
 
           #Sub already readed, so this and all that follow are already on our in memory sub db;
           last if exists $contests->{$c}->{sub_index}->{$s[0]};
 
           $contests->{$c}->{sub_index}->{$s[0]} = int( @{$contests->{$c}->{subs}} );
-          unshift @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $u};
+          unshift @{$temp}, {id => $s[0], problem => $s[2], result => $s[3], user => $u, subtime => $sub_time};
         }
 
         #Processing subs for user $u on the right order now...
@@ -97,31 +133,27 @@ Mojo::IOLoop->recurring(
 
           my $prob_number = $contests->{$c}->{probs_index}->{$s->{problem}} + 3;
           my $user_number = $contests->{$c}->{users_index}->{$u};
+          my $sub_time = $s->{subtime};
           my $res = $s->{result};
 
           my $r = $contests->{$c}->{scoreboard}->[$user_number];
 
-          if( $r->[prob_number]->[0] == -1 ){
+          if( $r->[$prob_number]->[0] == -1 ){
 
-            $r->[prob_number]->[1]++; #One more submission to this problem;
+            $r->[$prob_number]->[1]++; #One more submission to this problem;
 
             if( $res eq 'AC' ){
-
-              #TODO: Set the time of correct submission.
-              #$r->[prob_number]->[0] = $now - $c_st;
+              #Set the time of correct submission.
+              $r->[$prob_number]->[0] = $sub_time->subtract_datetime($c_st)->in_units('minutes');
 
               #Update total penalty.
-              $r->[2] += $r->[prob_number]->[1] * $penalty_per_wrong_sub;
+              $r->[2] += $r->[$prob_number]->[0] + ($r->[$prob_number]->[1] - 1) * $penalty_per_wrong_sub;
 
+              #Update total acc.
+              $r->[1]++;
             }
-
-
           }
-
-
         }
-
-
 
         #push @{$contests->{$c}->{subs}}, (@{$temp});
 
@@ -216,10 +248,108 @@ app->secret('super_secret_phrase_here');
 app->start;
 __DATA__
 @@index.html.ep
-Hello World! :-)
+<center>
+  <h2>
+    Contests:
+  </h2>
+  <% for my $c ( @{$clist} ) { %>
+    <p><a href="/<%= $c->[0] %>"><%= $c->[1] %></a></p>
+  <% } %>
+</center>
 
-@@contest.html.ep
-Contest here :-)
+
+
+
 
 @@404.html.ep
-Contest not found =/
+<center>
+  <img src="img/sorry.jpg">
+  <h3>
+    Sorry, but I could not find the contest you are looking for.
+  </h3>
+</center>
+
+
+
+@@notstarted.html.ep
+<center>
+  <img src="img/wait.jpg">
+  <h3>
+    Sir, please wait the contest start time.
+  </h3>
+</center>
+
+
+
+
+
+
+@@contest.html.ep
+<html>
+  <head>
+    <title>Contest: <%= $title %></title>
+    
+    <link href="css/bootstrap.min.css" rel="stylesheet">
+    <link href="css/spojbr-voc.css" rel="stylesheet">
+  </head>
+  <body>
+
+    <div class="container">
+
+      <div class="row">
+        <div class="span12">
+          <center>
+            <h2>"<%= $title %>" Scoreboard</h2>
+          </center>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="span12">
+
+          <table class="table table-striped table-bordered table-hover" id="scoreboard">
+            <thead>
+              <tr>
+                <th>Name</th>
+
+                <% for my $p ( @{$probs} ) { %>
+                  <th class="centertext"><a href="http://br.spoj.pl/problems/<%= $p %>/" target="_blank"><%= $p %></a></th>
+                <% } %>
+
+                <th class="righttext">ACs</th>
+                <th class="righttext">Penalty</th>
+              </tr>
+            </thead>
+
+            <tbody id="scoreboard_body">
+              <% for my $u ( @{$users} ) { %>
+                  <tr id="user_<%= $u %>">
+                    <td><%= $u %></td>
+
+                    <% my $count = 0; %>
+                    <% for my $p ( @{$probs} ) { %>
+                      <td class="centertext" id="prob<%= $count %>"><small>--:-- (0)</small></td>
+                    <% $count++; %>
+                    <% } %>
+
+                    <td class="righttext" id="acs"><small>0</small></td>
+                    <td class="righttext" id="penalty"><small>0</small></td>
+
+                  </tr>
+               <% } %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+
+    <script src="js/jquery-1.8.1.min.js"></script>
+    <script src="js/bootstrap.min.js"></script>
+    <script src="js/spojbr-voc.js"></script>
+    <script>
+      contestname = '<%= $url %>';
+    </script>
+  </body>
+</html>
