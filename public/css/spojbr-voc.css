@@ -1,0 +1,7 @@
+td.righttext, th.righttext {
+  text-align: right;
+}
+
+th.centertext, td.centertext {
+  text-align: center;
+}
